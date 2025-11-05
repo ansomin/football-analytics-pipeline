@@ -1,0 +1,12 @@
+# env files
+.env
+*.env
+!.env.example
+
+# Tableau
+*.twbx
+*.hyper
+*.tde
+*.tdsx
+
+# add more files if needed
