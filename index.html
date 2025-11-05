@@ -1,0 +1,260 @@
+<!DOCTYPE HTML>
+<html>
+  <head>
+    <title>Are Modern Football Matches Cleaner? — Fouls per Match (1999-2024)</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <link rel="stylesheet" href="assets/css/main.css" />
+    <noscript><link rel="stylesheet" href="assets/css/noscript.css" /></noscript>
+  </head>
+  <body class="is-preload">
+
+    <!-- Wrapper -->
+    <div id="wrapper">
+
+      <!-- Header -->
+      <header id="header">
+        <h1>Have Football Matches Become Less Physical Over Time?</h1>
+        <p>Exploring long-term trends in <em>fouls per match</em> across Top European leagues (1999-2024)</p>
+      </header>
+
+      <!-- Main -->
+      <div id="main">
+
+        <!-- Hero/Intro -->
+        <section id="intro" class="main">
+          <span class="image main">
+            <img src="images/cover.jpg" alt="Football analysis cover image. ReyesStuart MacFarlane/Arsenal FC via Getty Images" />
+          </span>
+
+          <h2>Motivation</h2>
+          <p>
+            Watching older matches from the early 2000s, it's hard not to notice how physical the game looked.
+            Compared to modern day football, tackles felt heavier and fouls seemed far more frequent. That raised a question:
+            <strong>Have football matches actually become less physical over time?</strong>
+          </p>
+
+          <p>
+            To answer this, I've built a small end-to-end data project: <strong>scraping team statistics,
+              cleaning and normalizing them, modeling a structured SQL database on AWS RDS,
+              and visualizing long-term trends with Tableau</strong>. Below is a summary of the full workflow and the interactive result.
+          </p>
+
+          <ul class="actions">
+            <li><a href="https://github.com/ansomin/football-analytics-pipeline" target="_blank" class="button">View Code on GitHub</a></li>
+            <li><a href="#viz" class="button">Jump to Visualization</a></li>
+          </ul>
+        </section>
+
+        <!-- Data Collection -->
+        <section id="collect" class="main">
+          <h2>Step 1 — Collecting the Data</h2>
+          <p>
+            I explored several sources and chose <a href="https://fbref.com/en/" target="_blank">FBref</a>,
+            which publishes rich season-level team stats (goals, assists, fouls, cards, xG, etc) for major
+            European leagues. I wrote a Python scraper to iterate through seasons/leagues and fetch the relevant
+            tables, saving about <strong>~130 CSV files</strong> (one per league-season).
+          </p>
+          <ul>
+            <li>Leagues: Premier League (England), La Liga (Spain), Serie A (Italy), Bundesliga (Germany), Ligue 1 (France)</li>
+            <li>Seasons: 1999-2000 through 2023-2024</li>
+            <li>Saved outputs to <code>data_raw/&lt;season&gt;-&lt;league&gt;-Stats.csv</code></li>
+          </ul>
+        </section>
+
+        <!-- Cleaning -->
+        <section id="clean" class="main">
+          <h2>Step 2 — Cleaning & Standardizing</h2>
+          <p>
+            Next, I combined all raw CSVs into a single DataFrame and standardized columns (lowercase, underscores instead
+            of spaces), converted numerics, and removed clearly redundant fields (ex. some <code>*_per90</code>
+            metrics I can recompute with base columns). Some early seasons (1999-2006) had missing values.
+            Because imputing those would distort historical patterns, I kept them as <code>NULL</code> to preserve the true trend.
+          </p>
+          <ul>
+            <li>Kept core columns such as <code>games_played</code>, <code>fouls</code>, <code>cards</code>, <code>possession</code>, <code>xG</code></li>
+            <li>Added <code>season</code> and <code>league</code> columns parsed from filenames</li>
+            <li>Saved outputs to <code>data_clean/</code> (both CSV and Parquet)</li>
+          </ul>
+        </section>
+
+        <!-- Database -->
+        <section id="db" class="main">
+          <h2>Step 3 — Normalized Database on AWS RDS</h2>
+          <p>
+            To store the cleaned data, I created a MySQL instance on AWS RDS and designed a <strong>Third Normal Form (3NF)</strong> schema.
+            In simple terms, 3NF ensures that each piece of information is stored only once. Every table represents a single concept (ex. leagues, seasons, or teams),
+            and redundant or repeating data is removed. This structure minimizes duplication, maintains consistency, and makes the database easier to extend for future analyses.
+          </p>
+
+          <p>
+            The resulting schema (below) separates data into five normalized tables, following 3NF principles:
+          </p>
+
+          <span class="image main">
+            <img src="images/sql_schema.png" alt="MySQL 3NF Schema Diagram" style="width:50%; height:auto; display:block; margin:0 auto;" />
+          </span>
+
+          <div class="row">
+            <div class="col-6 col-12-medium">
+              <h3>Schema (3NF)</h3>
+              <ul>
+                <li><strong>League</strong> (league_id, name)</li>
+                <li><strong>Season</strong> (season_id, label, start_year, end_year)</li>
+                <li><strong>Team</strong> (team_id, name)</li>
+                <li><strong>League_Season</strong> (ls_id, league_id, season_id, <em>UNIQUE</em>(league_id, season_id))</li>
+                <li><strong>Metric</strong> (metric_id, ls_id, team_id, … stats …, <em>UNIQUE</em>(ls_id, team_id))</li>
+              </ul>
+            </div>
+            <div class="col-6 col-12-medium">
+              <h3>ETL Highlights</h3>
+              <ul>
+                <li>Idempotent upserts for dimensions (League/Season/Team)</li>
+                <li>Bridge table <code>League_Season</code> to maintain 2NF/3NF</li>
+                <li>Insert/update of team-season <code>Metric</code> rows</li>
+              </ul>
+            </div>
+          </div>
+
+          <p>
+            For analysis, I created a view that computes <em>fouls per match</em> by <strong>league and season</strong>:
+          </p>
+          <pre><code>-- v_league_season_fouls (core formula used in sql view)
+fouls_per_match = SUM(fouls) / (SUM(games_played) / 2.0)
+-- I divided the number of games played by 2 because each match appears twice in team-level data (one row per team).
+</code></pre>
+        </section>
+
+        <!-- Visualization -->
+        <section id="viz" class="main">
+          <h2>Step 4 — Visualization (Tableau)</h2>
+          <p>
+            Finally, I connected Tableau directly to my AWS RDS MySQL database using the database's endpoint.
+            This live connection allowed Tableau to query aggregated views, such as <code>v_league_season_fouls</code>
+            in real time, so any updates in the database are instantly reflected in the visualization.
+            I then built an interactive line chart showing the <strong>trend in fouls per match over time</strong>,
+            colored by league, with tooltips showing the number of fouls per match, number of matches, and average yellow and red cards per season.
+          </p>
+
+
+          <h3>Interactive Chart</h3>
+          <p><em>Use the filters on the right to focus on specific leagues or time windows.</em></p>
+
+          <div class='tableauPlaceholder' id='viz1762339976711' style='position: relative'><noscript><a href='#'><img alt='Avg Fouls per Match Europe ' src='https:&#47;&#47;public.tableau.com&#47;static&#47;images&#47;fo&#47;fouls_per_match_trend&#47;AvgFoulsperMatchEurope&#47;1_rss.png' style='border: none' /></a></noscript><object class='tableauViz'  style='display:none;'><param name='host_url' value='https%3A%2F%2Fpublic.tableau.com%2F' /> <param name='embed_code_version' value='3' /> <param name='site_root' value='' /><param name='name' value='fouls_per_match_trend&#47;AvgFoulsperMatchEurope' /><param name='tabs' value='no' /><param name='toolbar' value='yes' /><param name='static_image' value='https:&#47;&#47;public.tableau.com&#47;static&#47;images&#47;fo&#47;fouls_per_match_trend&#47;AvgFoulsperMatchEurope&#47;1.png' /> <param name='animate_transition' value='yes' /><param name='display_static_image' value='yes' /><param name='display_spinner' value='yes' /><param name='display_overlay' value='yes' /><param name='display_count' value='yes' /><param name='language' value='en-US' /></object></div>                <script type='text/javascript'>                    var divElement = document.getElementById('viz1762339976711');                    var vizElement = divElement.getElementsByTagName('object')[0];                    if ( divElement.offsetWidth > 800 ) { vizElement.style.width='1000px';vizElement.style.height='827px';} else if ( divElement.offsetWidth > 500 ) { vizElement.style.width='1000px';vizElement.style.height='827px';} else { vizElement.style.width='100%';vizElement.style.height='727px';}                     var scriptElement = document.createElement('script');                    scriptElement.src = 'https://public.tableau.com/javascripts/api/viz_v1.js';                    vizElement.parentNode.insertBefore(scriptElement, vizElement);                </script>
+          <br>
+          <ul class="actions">
+            <li><a href="#findings" class="button">Jump to Findings</a></li>
+          </ul>
+        </section>
+
+        <!-- Findings / Discussion -->
+        <section id="findings" class="main">
+          <h2>What Did We Find?</h2>
+          <p>
+            The visualization suggests a <strong>broad decline in fouls per match</strong> from the early 2000s to the
+            present, with some league-specific nuances. (Exact numbers depend on the league and season range selected.)
+          </p>
+
+          <h3>Possible explanations for this decline</h3>
+          <ul>
+            <li><strong>Rule emphasis & refereeing guidance:</strong> Stricter interpretation of reckless or dangerous tackles discourages physical play and encourages cleaner challenges.</li>
+            <li><strong>Evolution of tactics and team organization:</strong> Modern football emphasizes <em>team cohesion</em> and coordinated structures over individual physical duels.
+                Players now defend collectively, cutting passing lanes rather than relying on heavy tackles.</li>
+            <li><strong>Video review era (VAR):</strong> Increased accountability through video review makes reckless fouls more costly, lowering player risk-taking.</li>
+          </ul>
+
+          <p>
+            Important to note that these are directional hypotheses. To establish causation, we would require event-level match data and
+            controlled analyses (ex. before/after specific law changes).
+          </p>
+        </section>
+
+        <!-- Project details -->
+        <section id="repro" class="main">
+          <h2>Reproducibility & Project Details</h2>
+          <div class="row">
+            <div class="col-6 col-12-medium">
+              <h3>Tech Stack</h3>
+              <ul>
+                <li>Python (requests, BeautifulSoup, pandas, SQLAlchemy)</li>
+                <li>MySQL on AWS RDS (3NF schema)</li>
+                <li>Tableau for visualization</li>
+              </ul>
+            </div>
+            <div class="col-6 col-12-medium">
+              <h3>How to Run</h3>
+              <ol>
+                <li>Scrape: <code>python fbref_scraper.py -s 1999 -e 2024</code></li>
+                <li>Clean: <code>python data_cleaning.py</code></li>
+                <li>Load DB: <code>python load_db.py</code></li>
+                <li>Apply Views/Indexes: <code>python apply_sql.py -f views.sql</code></li>
+              </ol>
+            </div>
+          </div>
+
+          <h3>Key View</h3>
+          <pre><code>CREATE OR REPLACE VIEW view_fouls_per_league_season AS
+SELECT l.name AS league, s.label AS season,
+  SUM(m.fouls) AS total_fouls,
+  SUM(m.games_played) / 2 AS num_matches,
+  SUM(m.fouls) / (SUM(m.games_played) / 2) AS fouls_per_match,
+  AVG(m.cards_yellow) AS avg_yellow_cards,
+  AVG(m.cards_red) AS avg_red_cards
+FROM Metric m
+JOIN League_Season ls ON m.ls_id = ls.ls_id
+JOIN League l ON ls.league_id = l.league_id
+JOIN Season s ON ls.season_id = s.season_id
+GROUP BY l.name, s.label
+ORDER BY l.name, s.label;</code></pre>
+
+          <ul class="actions">
+            <li><a href="https://github.com/ansomin/football-analytics-pipeline" target="_blank" class="button">Repository</a></li>
+            <li><a href="#header" class="button">Back to Top</a></li>
+          </ul>
+        </section>
+
+      </div>
+
+      <!-- Footer -->
+      <footer id="footer">
+        <section>
+          <h2>About This Project</h2>
+          <p>
+            Built from end-to-end, to demonstrate data collection, cleaning, database design, and visualization skills
+            based on a question stemming from european football. Feedback and suggestions are welcome!
+          </p>
+          <ul class="actions">
+            <li><a href="mailto:ansomin16@gmail.com" class="button">Contact Me</a></li>
+          </ul>
+        </section>
+        <section>
+          <h2>Related Links</h2>
+          <dl class="alt">
+            <dt>GitHub</dt>
+            <dd><a href="https://github.com/ansomin/football-analytics-pipeline">github.com/ansomin/football-analytics-pipeline</a></dd>
+            <dt>Tableau</dt>
+            <dd><a href="https://public.tableau.com/app/profile/so.min.an/">Tableau Public Profile</a></dd>
+          </dl>
+          <ul class="icons">
+            <li><a href="https://github.com/ansomin" class="icon brands fa-github alt"><span class="label">GitHub</span></a></li>
+            <li><a href="https://www.linkedin.com/in/ansomin/" class="icon brands fa-linkedin alt"><span class="label">LinkedIn</span></a></li>
+          </ul>
+        </section>
+        <p class="copyright">
+          &copy; So Min An. Design: <a href="https://html5up.net">HTML5 UP</a>.
+        </p>
+      </footer>
+
+    </div>
+
+    <!-- Scripts -->
+    <script src="assets/js/jquery.min.js"></script>
+    <script src="assets/js/jquery.scrollex.min.js"></script>
+    <script src="assets/js/jquery.scrolly.min.js"></script>
+    <script src="assets/js/browser.min.js"></script>
+    <script src="assets/js/breakpoints.min.js"></script>
+    <script src="assets/js/util.js"></script>
+    <script src="assets/js/main.js"></script>
+
+  </body>
+</html>
